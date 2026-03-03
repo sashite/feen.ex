@@ -1,45 +1,23 @@
-# lib/sashite/feen/dumper/style_turn.ex
-
 defmodule Sashite.Feen.Dumper.StyleTurn do
-  @moduledoc """
-  Dumper (serializer) for the Style-Turn field of FEEN notation.
+  @moduledoc false
 
-  Converts a style-turn structure back to its canonical FEEN string representation.
+  # Serializer for the FEEN Style-Turn field (Field 3).
+  #
+  # Format: <ACTIVE-STYLE>/<INACTIVE-STYLE>
+  #
+  # The active style is the style of the player whose turn it is.
+  # Uppercase = first player, lowercase = second player.
+  #
+  # Accepts the three Qi fields directly: turn, first_player_style,
+  # second_player_style. Produces a canonical 3-byte binary.
 
-  ## Format
+  @doc false
+  @spec dump(:first | :second, String.t(), String.t()) :: binary()
+  def dump(:first, first_player_style, second_player_style) do
+    <<first_player_style::binary, "/", second_player_style::binary>>
+  end
 
-      <ACTIVE-STYLE>/<INACTIVE-STYLE>
-
-  ## Examples
-
-      iex> style_turn = %{active: %Sashite.Sin{style: :C, side: :first}, inactive: %Sashite.Sin{style: :C, side: :second}}
-      iex> Sashite.Feen.Dumper.StyleTurn.dump(style_turn)
-      "C/c"
-
-      iex> style_turn = %{active: %Sashite.Sin{style: :S, side: :second}, inactive: %Sashite.Sin{style: :S, side: :first}}
-      iex> Sashite.Feen.Dumper.StyleTurn.dump(style_turn)
-      "s/S"
-
-  """
-
-  alias Sashite.Sin
-
-  @doc """
-  Dumps a style-turn structure to its canonical FEEN string.
-
-  ## Parameters
-
-  - `style_turn` - A map with `:active` and `:inactive` keys containing SIN structs
-
-  ## Returns
-
-  A canonical style-turn string.
-  """
-  @spec dump(map()) :: String.t()
-  def dump(%{active: active, inactive: inactive}) do
-    active_str = Sin.to_string(active)
-    inactive_str = Sin.to_string(inactive)
-
-    "#{active_str}/#{inactive_str}"
+  def dump(:second, first_player_style, second_player_style) do
+    <<second_player_style::binary, "/", first_player_style::binary>>
   end
 end

@@ -2,193 +2,131 @@ defmodule Sashite.Feen do
   @moduledoc """
   FEEN (Field Expression Encoding Notation) implementation for Elixir.
 
-  FEEN is a **rule-agnostic position encoding** for two-player, turn-based
-  board games built on the Sashite Game Protocol.
+  Provides serialization and deserialization of board game positions
+  between FEEN strings and `Qi` objects.
 
-  A FEEN string encodes exactly:
+  FEEN is a rule-agnostic, canonical position encoding for two-player,
+  turn-based board games built on the Sashite Game Protocol. A FEEN
+  string encodes exactly three fields: piece placement, hands, and
+  style-turn.
 
-  1. **Board occupancy** (which Pieces are on which Squares)
-  2. **Hands** (multisets of off-board Pieces held by each Player)
-  3. **Side styles** and the **Active Player**
+  ## Parsing (FEEN String -> Qi)
 
-  ## Format
+      {:ok, position} = Sashite.Feen.parse("8/8/8/8/8/8/8/8 / C/c")
+      position.shape  #=> [8, 8]
+      position.turn   #=> :first
 
-  A FEEN string consists of three fields separated by single ASCII spaces:
+  ## Dumping (Qi -> FEEN String)
 
-      <PIECE-PLACEMENT> <HANDS> <STYLE-TURN>
+      Sashite.Feen.dump(position)  #=> "8/8/8/8/8/8/8/8 / C/c"
 
-  ## Examples
+  ## Validation
 
-      iex> feen = "+rnbq+k^bn+r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/c"
-      iex> {:ok, position} = Sashite.Feen.parse(feen)
-      iex> position.style_turn.active.side
-      :first
-
-      iex> Sashite.Feen.valid?("lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s")
-      true
-
-      iex> Sashite.Feen.valid?("invalid")
-      false
-
-  See the [FEEN Specification](https://sashite.dev/specs/feen/1.0.0/) for details.
+      Sashite.Feen.valid?("8/8/8/8/8/8/8/8 / C/c")  #=> true
+      Sashite.Feen.valid?("invalid")                  #=> false
   """
 
-  alias Sashite.Feen.Dumper
-  alias Sashite.Feen.Parser
-
-  @typedoc """
-  A parsed FEEN position containing all three fields.
-  """
-  @type t :: %__MODULE__{
-          piece_placement: piece_placement(),
-          hands: hands(),
-          style_turn: style_turn()
-        }
-
-  @typedoc """
-  Piece placement data representing board occupancy.
-
-  - `squares` - List of segments, each segment is a list of squares (nil for empty, EPIN for piece)
-  - `separators` - List of separator counts between consecutive segments
-  """
-  @type piece_placement :: %{
-          squares: [[Sashite.Epin.t() | nil]],
-          separators: [pos_integer()]
-        }
-
-  @typedoc """
-  Hands data representing pieces held by each player.
-
-  - `first` - List of EPIN structs held by first player
-  - `second` - List of EPIN structs held by second player
-  """
-  @type hands :: %{
-          first: [Sashite.Epin.t()],
-          second: [Sashite.Epin.t()]
-        }
-
-  @typedoc """
-  Style-turn data representing native styles and active player.
-
-  - `active` - SIN struct of the active player (to move)
-  - `inactive` - SIN struct of the inactive player
-  """
-  @type style_turn :: %{
-          active: Sashite.Sin.t(),
-          inactive: Sashite.Sin.t()
-        }
-
-  @enforce_keys [:piece_placement, :hands, :style_turn]
-  defstruct [:piece_placement, :hands, :style_turn]
-
-  # ===========================================================================
-  # Parsing
-  # ===========================================================================
+  alias Sashite.Feen.{Dumper, Limits, Parser}
 
   @doc """
-  Parses a FEEN string into a position struct.
+  Parses a FEEN string into a `Qi` position.
 
-  Returns `{:ok, position}` on success, `{:error, reason}` on failure.
+  Returns `{:ok, %Qi{}}` on success or `{:error, reason}` on failure,
+  where `reason` is an atom identifying the validation error.
+
+  Pieces on the board are stored as EPIN token strings. Empty squares
+  are `nil`. Hands are `%{String.t() => pos_integer()}` count maps.
 
   ## Examples
 
-      iex> {:ok, position} = Sashite.Feen.parse("8/8/8/8/8/8/8/8 / C/c")
-      iex> position.style_turn.active.side
+      iex> {:ok, pos} = Sashite.Feen.parse("k^7/8/8/8/8/8/8/7K^ / C/c")
+      iex> pos.shape
+      [8, 8]
+      iex> elem(pos.board, 0)
+      "k^"
+      iex> pos.turn
       :first
-
-      iex> {:ok, position} = Sashite.Feen.parse("lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s")
-      iex> position.style_turn.active.style
-      :S
 
       iex> Sashite.Feen.parse("invalid")
-      {:error, "Invalid FEEN string: expected exactly 3 fields separated by spaces, got 1"}
-
+      {:error, :invalid_field_count}
   """
-  @spec parse(String.t()) :: {:ok, t()} | {:error, String.t()}
-  def parse(feen_string) when is_binary(feen_string) do
-    Parser.parse(feen_string)
-  end
-
-  def parse(feen_string) do
-    {:error, "Invalid FEEN string: expected a string, got: #{inspect(feen_string)}"}
-  end
+  @spec parse(String.t()) :: {:ok, Qi.t()} | {:error, atom()}
+  def parse(input), do: Parser.parse(input)
 
   @doc """
-  Parses a FEEN string into a position struct.
+  Parses a FEEN string into a `Qi` position.
 
-  Returns the position struct on success, raises `ArgumentError` on failure.
+  Returns the `%Qi{}` directly on success. Raises `ArgumentError`
+  on failure with a descriptive message.
 
   ## Examples
 
-      iex> position = Sashite.Feen.parse!("8/8/8/8/8/8/8/8 / C/c")
-      iex> position.style_turn.active.side
+      iex> pos = Sashite.Feen.parse!("1 / C/c")
+      iex> pos.shape
+      [1]
+      iex> pos.turn
       :first
-
   """
-  @spec parse!(String.t()) :: t()
-  def parse!(feen_string) do
-    case parse(feen_string) do
-      {:ok, position} -> position
-      {:error, reason} -> raise ArgumentError, reason
+  @spec parse!(String.t()) :: Qi.t()
+  def parse!(input) do
+    case Parser.parse(input) do
+      {:ok, position} ->
+        position
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid FEEN string: #{reason} (input: #{inspect(input)})"
     end
   end
 
   @doc """
-  Checks if a string is a valid FEEN notation.
+  Reports whether the given value is a valid FEEN string.
+
+  Returns `true` if the input is a binary that can be parsed as a
+  valid, canonical FEEN position. Returns `false` for any other input.
+
+  Never raises. Uses an exception-free code path internally and never
+  constructs a `Qi` on invalid input.
 
   ## Examples
 
       iex> Sashite.Feen.valid?("8/8/8/8/8/8/8/8 / C/c")
       true
 
-      iex> Sashite.Feen.valid?("lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s")
-      true
-
       iex> Sashite.Feen.valid?("invalid")
       false
 
-      iex> Sashite.Feen.valid?(123)
+      iex> Sashite.Feen.valid?(nil)
       false
-
   """
-  @spec valid?(any()) :: boolean()
-  def valid?(feen_string) when is_binary(feen_string) do
-    case parse(feen_string) do
-      {:ok, _} -> true
-      {:error, _} -> false
-    end
-  end
-
-  def valid?(_), do: false
-
-  # ===========================================================================
-  # Dumping (Serialization)
-  # ===========================================================================
+  @spec valid?(term()) :: boolean()
+  def valid?(input), do: Parser.valid?(input)
 
   @doc """
-  Converts a position struct to its canonical FEEN string representation.
+  Serializes a `Qi` position to a canonical FEEN string.
+
+  Board pieces must be valid EPIN token strings. Style values must
+  be valid SIN token strings. The output is always in canonical form.
 
   ## Examples
 
-      iex> {:ok, position} = Sashite.Feen.parse("8/8/8/8/8/8/8/8 / C/c")
-      iex> Sashite.Feen.to_string(position)
+      iex> pos = Sashite.Feen.parse!("8/8/8/8/8/8/8/8 / C/c")
+      iex> Sashite.Feen.dump(pos)
       "8/8/8/8/8/8/8/8 / C/c"
-
   """
-  @spec to_string(t()) :: String.t()
-  def to_string(%__MODULE__{} = position) do
-    Dumper.dump(position)
-  end
-end
+  @spec dump(Qi.t()) :: String.t()
+  def dump(position), do: Dumper.dump(position)
 
-defimpl String.Chars, for: Sashite.Feen do
-  def to_string(position) do
-    Sashite.Feen.to_string(position)
-  end
-end
+  @doc """
+  Returns the maximum allowed FEEN string length in bytes.
 
-defimpl Inspect, for: Sashite.Feen do
-  def inspect(position, _opts) do
-    "#Sashite.Feen<#{Sashite.Feen.to_string(position)}>"
-  end
+  Inputs exceeding this limit are rejected before any parsing begins.
+
+  ## Examples
+
+      iex> Sashite.Feen.max_string_length()
+      4096
+  """
+  @spec max_string_length() :: pos_integer()
+  def max_string_length, do: Limits.max_string_length()
 end

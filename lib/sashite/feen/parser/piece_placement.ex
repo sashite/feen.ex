@@ -1,209 +1,286 @@
 defmodule Sashite.Feen.Parser.PiecePlacement do
-  @moduledoc """
-  Parser for the Piece Placement field (Field 1) of FEEN notation.
+  @moduledoc false
 
-  - One or more segments
-  - Segments separated by one or more '/' (slash groups)
-  - Must not start or end with '/'
-  - Each segment is a concatenation of placement tokens:
-    * empty-count tokens: base-10 integer >= 1, no leading zeros
-    * piece tokens: valid EPIN tokens
-  """
+  # Parser for the FEEN Piece Placement field (Field 1).
+  #
+  # Parses into a flat board (list of nil | String.t()) and a shape
+  # (list of dimension sizes), suitable for direct Qi construction.
+  #
+  # Handles 1D, 2D, and 3D boards:
+  # - 1D: no separators          → shape [width]
+  # - 2D: "/" separates ranks    → shape [rank_count, rank_width]
+  # - 3D: "//" separates layers  → shape [layer_count, ranks_per_layer, rank_width]
+  #
+  # Validates:
+  # - Syntactic correctness (EPIN tokens, empty counts)
+  # - Canonical form (no leading zeros, no consecutive empty counts)
+  # - Dimensional coherence (§7.4 — each layer must contain "/" in 3D)
+  # - Board regularity (all ranks have equal width)
+  # - Dimension limits (each axis ≤ 255)
+  #
+  # All parsing uses binary pattern matching — no String module, no regex.
 
-  alias Sashite.Epin
+  alias Sashite.Feen.Limits
 
-  @type segment :: [Epin.t() | nil]
+  @doc false
+  @spec parse(binary()) :: {:ok, {[String.t() | nil], [pos_integer()]}} | {:error, atom()}
 
-  @type t :: %{
-          squares: [segment()],
-          separators: [pos_integer()]
-        }
+  def parse(<<>>), do: {:error, :piece_placement_empty}
+  def parse(<<?/, _::binary>>), do: {:error, :piece_placement_starts_with_separator}
 
-  @spec parse(String.t()) :: {:ok, t()} | {:error, String.t()}
-  def parse(string) when is_binary(string) do
-    with :ok <- validate_not_empty(string),
-         :ok <- validate_no_leading_slash(string),
-         :ok <- validate_no_trailing_slash(string),
-         {:ok, segments, separators} <- parse_all(string) do
-      {:ok, %{squares: segments, separators: separators}}
-    end
-  end
-
-  # ===========================================================================
-  # Validation
-  # ===========================================================================
-
-  defp validate_not_empty(""), do: {:error, "Invalid piece placement: must not be empty"}
-  defp validate_not_empty(_), do: :ok
-
-  defp validate_no_leading_slash(string) do
-    if String.starts_with?(string, "/") do
-      {:error, "Invalid piece placement: must not start with /"}
+  def parse(input) when is_binary(input) do
+    if :binary.at(input, byte_size(input) - 1) == ?/ do
+      {:error, :piece_placement_ends_with_separator}
     else
-      :ok
+      input |> scan_max_separator(0, 0) |> parse_by_dimensions(input)
     end
   end
 
-  defp validate_no_trailing_slash(string) do
-    if String.ends_with?(string, "/") do
-      {:error, "Invalid piece placement: must not end with /"}
+  defp parse_by_dimensions(max_sep, input) do
+    dims = max_sep + 1
+
+    if dims > Limits.max_dimensions() do
+      {:error, :exceeds_max_dimensions}
     else
-      :ok
-    end
-  end
-
-  # ===========================================================================
-  # Top-level parsing: segment (slash_group segment)*
-  # ===========================================================================
-
-  defp parse_all(bin), do: parse_segments(bin, [], [])
-
-  defp parse_segments(<<>>, segs_acc, seps_acc) do
-    {:ok, Enum.reverse(segs_acc), Enum.reverse(seps_acc)}
-  end
-
-  defp parse_segments(bin, segs_acc, seps_acc) do
-    with {:ok, segment, rest} <- parse_segment(bin) do
-      segs_acc = [segment | segs_acc]
-
-      case rest do
-        <<>> ->
-          parse_segments(<<>>, segs_acc, seps_acc)
-
-        <<"/", _::binary>> ->
-          {count, after_slashes} = take_slashes(rest)
-
-          if after_slashes == <<>> do
-            {:error, "Invalid piece placement: must not end with /"}
-          else
-            parse_segments(after_slashes, segs_acc, [count | seps_acc])
-          end
-
-        _ ->
-          {:error, "Invalid piece placement: unexpected character '#{String.first(rest)}'"}
+      case dims do
+        1 -> parse_1d(input)
+        2 -> parse_2d(input)
+        3 -> parse_3d(input)
       end
     end
   end
 
-  defp take_slashes(bin), do: take_slashes(bin, 0)
+  # ── Max separator scan ──────────────────────────────────────────────
+  #
+  # Finds the longest consecutive run of "/" in the input.
+  # O(n) single pass, no allocation.
 
-  defp take_slashes(<<"/", rest::binary>>, n), do: take_slashes(rest, n + 1)
-  defp take_slashes(rest, n) when n >= 1, do: {n, rest}
+  defp scan_max_separator(<<>>, current, max_seen), do: max(current, max_seen)
 
-  # ===========================================================================
-  # Segment parsing: placement_token+
-  # ===========================================================================
+  defp scan_max_separator(<<?/, rest::binary>>, current, max_seen),
+    do: scan_max_separator(rest, current + 1, max_seen)
 
-  defp parse_segment(bin) do
-    case parse_segment_tokens(bin, [], 0) do
-      {:ok, [], _rest, 0} ->
-        {:error, "Invalid piece placement: empty segment"}
+  defp scan_max_separator(<<_, rest::binary>>, current, max_seen),
+    do: scan_max_separator(rest, 0, max(current, max_seen))
 
-      {:ok, acc, rest, _count} ->
-        {:ok, Enum.reverse(acc), rest}
+  # ── 1D ──────────────────────────────────────────────────────────────
 
-      {:error, _} = err ->
-        err
+  defp parse_1d(input) do
+    with {:ok, squares} <- parse_segment(input) do
+      width = length(squares)
+
+      if width > Limits.max_dimension_size() do
+        {:error, :dimension_size_exceeds_limit}
+      else
+        {:ok, {squares, [width]}}
+      end
     end
   end
 
-  defp parse_segment_tokens(<<>>, acc, count), do: {:ok, acc, <<>>, count}
+  # ── 2D ──────────────────────────────────────────────────────────────
+  #
+  # Split on "/" (guaranteed single slashes since max_sep == 1).
+  # Validates: all ranks have equal width (regularity), dimension limits.
 
-  defp parse_segment_tokens(<<"/", _::binary>> = rest, acc, count),
-    do: {:ok, acc, rest, count}
+  defp parse_2d(input) do
+    rank_strs = :binary.split(input, "/", [:global])
 
-  defp parse_segment_tokens(<<c, _::binary>> = bin, acc, count) when c in ?0..?9 do
-    with {:ok, n, rest} <- parse_empty_count_token(bin) do
-      acc2 = prepend_nils(acc, n)
-      parse_segment_tokens(rest, acc2, count + 1)
+    with {:ok, ranks} <- parse_all_segments(rank_strs) do
+      [first_rank | rest_ranks] = ranks
+      rank_width = length(first_rank)
+      rank_count = length(ranks)
+
+      cond do
+        rank_width > Limits.max_dimension_size() ->
+          {:error, :dimension_size_exceeds_limit}
+
+        rank_count > Limits.max_dimension_size() ->
+          {:error, :dimension_size_exceeds_limit}
+
+        not all_width?(rest_ranks, rank_width) ->
+          {:error, :board_not_regular}
+
+        true ->
+          {:ok, {List.flatten(ranks), [rank_count, rank_width]}}
+      end
     end
   end
 
-  defp parse_segment_tokens(bin, acc, count) do
-    with {:ok, epin, rest} <- parse_piece_token(bin) do
-      parse_segment_tokens(rest, [epin | acc], count + 1)
+  # ── 3D ──────────────────────────────────────────────────────────────
+  #
+  # Split on "//" for layers, then "/" for ranks within each layer.
+  # Validates:
+  # - Dimensional coherence: each layer has ≥ 2 ranks (§7.4)
+  # - Coherence: all layers have equal rank count
+  # - Regularity: all ranks across all layers have equal width
+  # - Dimension limits on all three axes
+
+  defp parse_3d(input) do
+    layer_strs = :binary.split(input, "//", [:global])
+
+    with {:ok, layers} <- parse_layers(layer_strs) do
+      [[first_rank | _] = first_layer | rest_layers] = layers
+      rank_width = length(first_rank)
+      ranks_per_layer = length(first_layer)
+      layer_count = length(layers)
+
+      cond do
+        ranks_per_layer < 2 ->
+          # §7.4: structures separated by "//" must contain "/"
+          {:error, :dimensional_coherence_violation}
+
+        layer_count > Limits.max_dimension_size() ->
+          {:error, :dimension_size_exceeds_limit}
+
+        ranks_per_layer > Limits.max_dimension_size() ->
+          {:error, :dimension_size_exceeds_limit}
+
+        rank_width > Limits.max_dimension_size() ->
+          {:error, :dimension_size_exceeds_limit}
+
+        not all_layers_coherent?(rest_layers, ranks_per_layer) ->
+          {:error, :dimensional_coherence_violation}
+
+        not all_ranks_regular?(layers, rank_width) ->
+          {:error, :board_not_regular}
+
+        true ->
+          {:ok, {List.flatten(layers), [layer_count, ranks_per_layer, rank_width]}}
+      end
     end
   end
 
-  # ===========================================================================
-  # Empty-count token: digits, no leading zeros, >= 1
-  # ===========================================================================
+  # ── Layer parsing (3D) ──────────────────────────────────────────────
 
-  defp parse_empty_count_token(<<first, rest::binary>>) when first in ?0..?9 do
-    {n, rest2, len} = take_number(rest, first - ?0, 1)
+  defp parse_layers(layer_strs), do: parse_layers(layer_strs, [])
+
+  defp parse_layers([], acc), do: {:ok, :lists.reverse(acc)}
+
+  defp parse_layers([layer_str | rest], acc) do
+    rank_strs = :binary.split(layer_str, "/", [:global])
+
+    with {:ok, ranks} <- parse_all_segments(rank_strs) do
+      parse_layers(rest, [ranks | acc])
+    end
+  end
+
+  # ── Segment list parsing ────────────────────────────────────────────
+
+  defp parse_all_segments(segments), do: parse_all_segments(segments, [])
+
+  defp parse_all_segments([], acc), do: {:ok, :lists.reverse(acc)}
+
+  defp parse_all_segments([seg | rest], acc) do
+    with {:ok, squares} <- parse_segment(seg) do
+      parse_all_segments(rest, [squares | acc])
+    end
+  end
+
+  # ── Shape validation helpers ────────────────────────────────────────
+
+  defp all_width?([], _width), do: true
+  defp all_width?([rank | rest], width), do: length(rank) == width and all_width?(rest, width)
+
+  defp all_layers_coherent?([], _expected), do: true
+
+  defp all_layers_coherent?([layer | rest], expected) do
+    length(layer) == expected and all_layers_coherent?(rest, expected)
+  end
+
+  defp all_ranks_regular?([], _width), do: true
+
+  defp all_ranks_regular?([layer | rest], width) do
+    all_width?(layer, width) and all_ranks_regular?(rest, width)
+  end
+
+  # ── Single segment (rank) parsing ───────────────────────────────────
+  #
+  # A segment is a concatenation of placement tokens:
+  # - Empty-count: integer ≥ 1, no leading zeros, no consecutive counts
+  # - Piece token: valid EPIN [+-]?[A-Za-z]^?'?
+  #
+  # Returns {:ok, [nil | String.t()]} where nil = empty square.
+
+  # :nocov:
+  defp parse_segment(<<>>), do: {:error, :empty_segment}
+  # :nocov:
+  defp parse_segment(input), do: parse_segment_loop(input, false, [])
+
+  # End of segment
+  defp parse_segment_loop(<<>>, _last_was_empty, acc), do: {:ok, :lists.reverse(acc)}
+
+  # Consecutive empty counts (non-canonical)
+  # :nocov:
+  defp parse_segment_loop(<<byte, _::binary>>, true, _acc) when byte in ?0..?9 do
+    {:error, :invalid_empty_count}
+  end
+
+  # :nocov:
+
+  # Empty-count token
+  defp parse_segment_loop(<<first_byte, _::binary>> = input, _last_was_empty, acc)
+       when first_byte in ?0..?9 do
+    {value, digit_count, rest} = scan_digits(input, 0, 0)
 
     cond do
-      len > 1 and first == ?0 ->
-        {:error, "Invalid piece placement: empty count must not have leading zeros"}
-
-      n < 1 ->
-        {:error, "Invalid piece placement: empty count must be >= 1, got #{n}"}
-
-      true ->
-        {:ok, n, rest2}
+      digit_count > 1 and first_byte == ?0 -> {:error, :invalid_empty_count}
+      value < 1 -> {:error, :invalid_empty_count}
+      true -> parse_segment_loop(rest, true, prepend_empties(acc, value))
     end
   end
 
-  defp take_number(<<c, rest::binary>>, acc, len) when c in ?0..?9 do
-    take_number(rest, acc * 10 + (c - ?0), len + 1)
-  end
-
-  defp take_number(rest, acc, len), do: {acc, rest, len}
-
-  defp prepend_nils(acc, 0), do: acc
-  defp prepend_nils(acc, n) when n > 0, do: prepend_nils([nil | acc], n - 1)
-
-  # ===========================================================================
-  # Piece token: maximal EPIN candidate, validated by Epin.parse/1
-  # EPIN shape here: [+-]?[A-Za-z]("^")?("'")?
-  # ===========================================================================
-
-  defp parse_piece_token(bin) do
-    with {:ok, token, rest} <- take_epin_candidate(bin) do
-      case Epin.parse(token) do
-        {:ok, epin} -> {:ok, epin, rest}
-        {:error, _} -> {:error, "Invalid piece placement: invalid piece token '#{token}'"}
-      end
+  # Piece token
+  defp parse_segment_loop(input, _last_was_empty, acc) do
+    case extract_piece(input) do
+      {:ok, piece, rest} -> parse_segment_loop(rest, false, [piece | acc])
+      :error -> {:error, :invalid_piece_token}
     end
   end
 
-  defp take_epin_candidate(<<sign, rest::binary>>) when sign in [?+, ?-] do
-    with {:ok, letter, rest2} <- take_letter(rest) do
-      {terminal?, rest3} = take_optional(rest2, ?^)
-      {derived?, rest4} = take_optional(rest3, ?')
+  # ── Digit scanning ─────────────────────────────────────────────────
+  #
+  # Greedily consumes ASCII digits, accumulating the integer value inline.
+  # Returns {value, digit_count, rest}.
 
-      token =
-        <<sign, letter>> <>
-          (if terminal?, do: "^", else: "") <>
-          (if derived?, do: "'", else: "")
+  defp scan_digits(<<byte, rest::binary>>, value, count) when byte in ?0..?9 do
+    scan_digits(rest, value * 10 + (byte - ?0), count + 1)
+  end
 
-      {:ok, token, rest4}
+  defp scan_digits(rest, value, count), do: {value, count, rest}
+
+  # ── Empty square prepending ─────────────────────────────────────────
+
+  defp prepend_empties(acc, 0), do: acc
+  defp prepend_empties(acc, n), do: prepend_empties([nil | acc], n - 1)
+
+  # ── EPIN token extraction ───────────────────────────────────────────
+  #
+  # Pattern: [+-]?[A-Za-z]^?'?
+  # Consumes from the front of the binary, returns {piece_string, rest}.
+  # Uses sub-binary references (O(1) via binary_part).
+
+  defp extract_piece(input) do
+    rest1 = skip_state_modifier(input)
+
+    case rest1 do
+      <<letter, rest2::binary>> when letter in ?A..?Z or letter in ?a..?z ->
+        rest3 = skip_terminal(rest2)
+        rest4 = skip_derived(rest3)
+        piece_len = byte_size(input) - byte_size(rest4)
+        {:ok, binary_part(input, 0, piece_len), rest4}
+
+      _ ->
+        :error
     end
   end
 
-  defp take_epin_candidate(<<letter, rest::binary>> = bin) do
-    if (letter in ?A..?Z) or (letter in ?a..?z) do
-      {terminal?, rest2} = take_optional(rest, ?^)
-      {derived?, rest3} = take_optional(rest2, ?')
+  defp skip_state_modifier(<<?-, rest::binary>>), do: rest
+  defp skip_state_modifier(<<?+, rest::binary>>), do: rest
+  defp skip_state_modifier(rest), do: rest
 
-      token =
-        <<letter>> <>
-          (if terminal?, do: "^", else: "") <>
-          (if derived?, do: "'", else: "")
+  defp skip_terminal(<<?^, rest::binary>>), do: rest
+  defp skip_terminal(rest), do: rest
 
-      {:ok, token, rest3}
-    else
-      {:error, "Invalid piece placement: unexpected character '#{String.first(bin)}'"}
-    end
-  end
-
-  defp take_letter(<<letter, rest::binary>>)
-       when (letter in ?A..?Z) or (letter in ?a..?z),
-       do: {:ok, letter, rest}
-
-  defp take_letter(bin),
-    do: {:error, "Invalid piece placement: unexpected character '#{String.first(bin)}'"}
-
-  defp take_optional(<<c, rest::binary>>, wanted) when c == wanted, do: {true, rest}
-  defp take_optional(rest, _wanted), do: {false, rest}
+  defp skip_derived(<<?', rest::binary>>), do: rest
+  defp skip_derived(rest), do: rest
 end

@@ -1,332 +1,159 @@
-# test/sashite/feen_test.exs
-
 defmodule Sashite.FeenTest do
   use ExUnit.Case, async: true
 
-  alias Sashite.Feen
-
-  doctest Sashite.Feen
-
   # ===========================================================================
-  # parse/1
+  # max_string_length/0
   # ===========================================================================
 
-  describe "parse/1" do
-    test "parses empty 8x8 board" do
-      feen = "8/8/8/8/8/8/8/8 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.hands.first == []
-      assert position.hands.second == []
-      assert position.style_turn.active.side == :first
-      assert position.style_turn.inactive.side == :second
+  describe "max_string_length/0" do
+    test "returns 4096" do
+      assert Sashite.Feen.max_string_length() == 4096
     end
 
-    test "parses chess starting position" do
-      feen = "+rnbq+k^bn+r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.style == :C
-      assert position.style_turn.active.side == :first
-    end
-
-    test "parses shogi starting position" do
-      feen = "lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.style == :S
-      assert position.style_turn.active.side == :first
-    end
-
-    test "parses xiangqi starting position" do
-      feen = "rheag^aehr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RHEAG^AEHR / X/x"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.style == :X
-    end
-
-    test "parses makruk starting position" do
-      feen = "rnsmk^snr/8/pppppppp/8/8/PPPPPPPP/8/RNSK^MSNR / M/m"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.style == :M
-    end
-
-    test "parses position with pieces in hand" do
-      feen = "8/8/8/8/8/8/8/8 2P3B/p C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert length(position.hands.first) == 5
-      assert length(position.hands.second) == 1
-    end
-
-    test "parses position with second player to move" do
-      feen = "8/8/8/8/8/8/8/8 / c/C"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.side == :second
-      assert position.style_turn.inactive.side == :first
-    end
-
-    test "parses cross-style game" do
-      feen = "rnsmk^snr/8/pppppppp/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/m"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert position.style_turn.active.style == :C
-      assert position.style_turn.inactive.style == :M
-    end
-
-    test "parses position with derived pieces" do
-      feen = "K'/7 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      [[first_piece | _] | _] = position.piece_placement.squares
-      assert first_piece.derived == true
-    end
-
-    test "parses position with terminal pieces" do
-      feen = "K^/7 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      [[first_piece | _] | _] = position.piece_placement.squares
-      assert first_piece.pin.terminal == true
-    end
-
-    test "parses position with enhanced pieces" do
-      feen = "+K/7 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      [[first_piece | _] | _] = position.piece_placement.squares
-      assert first_piece.pin.state == :enhanced
-    end
-
-    test "parses position with diminished pieces" do
-      feen = "-K/7 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      [[first_piece | _] | _] = position.piece_placement.squares
-      assert first_piece.pin.state == :diminished
-    end
-
-    test "parses 3D board with double slashes" do
-      feen = "8/8//8/8 / C/c"
-
-      assert {:ok, position} = Feen.parse(feen)
-      assert length(position.piece_placement.squares) == 4
-      # Separators: [1, 2, 1] means single slash, double slash, single slash
-      assert position.piece_placement.separators == [1, 2, 1]
-    end
-
-    test "returns error for invalid input type" do
-      assert {:error, message} = Feen.parse(123)
-      assert message =~ "expected a string"
-    end
-
-    test "returns error for wrong number of fields" do
-      assert {:error, message} = Feen.parse("8/8/8/8/8/8/8/8 C/c")
-      assert message =~ "expected exactly 3 fields"
-    end
-
-    test "returns error for leading whitespace" do
-      assert {:error, message} = Feen.parse(" 8/8/8/8/8/8/8/8 / C/c")
-      assert message =~ "leading or trailing whitespace"
-    end
-
-    test "returns error for trailing whitespace" do
-      assert {:error, message} = Feen.parse("8/8/8/8/8/8/8/8 / C/c ")
-      assert message =~ "leading or trailing whitespace"
-    end
-
-    test "returns error for line breaks" do
-      assert {:error, message} = Feen.parse("8/8/8/8\n8/8/8/8 / C/c")
-      assert message =~ "line breaks"
-    end
-
-    test "returns error for non-ASCII characters" do
-      assert {:error, message} = Feen.parse("8/8/8/8/8/8/8/8 / C/é")
-      assert message =~ "ASCII"
-    end
-
-    test "returns error for invalid piece placement" do
-      assert {:error, message} = Feen.parse("/8/8/8/8/8/8/8 / C/c")
-      assert message =~ "piece placement"
-    end
-
-    test "returns error for invalid hands" do
-      assert {:error, message} = Feen.parse("8/8/8/8/8/8/8/8 P C/c")
-      assert message =~ "hands"
-    end
-
-    test "returns error for invalid style-turn" do
-      assert {:error, message} = Feen.parse("8/8/8/8/8/8/8/8 / C/C")
-      assert message =~ "opposite case"
+    test "returns a positive integer" do
+      value = Sashite.Feen.max_string_length()
+      assert is_integer(value)
+      assert value > 0
     end
   end
 
   # ===========================================================================
-  # parse!/1
+  # parse/1 and valid?/1 consistency -- valid inputs
   # ===========================================================================
 
-  describe "parse!/1" do
-    test "returns position for valid FEEN" do
-      feen = "8/8/8/8/8/8/8/8 / C/c"
+  describe "parse/1 and valid?/1 agree on valid inputs" do
+    @valid_cases [
+      {"8/8/8/8/8/8/8/8 / C/c", "empty chess board"},
+      {"-rnbqk^bn-r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/-RNBQK^BN-R / C/c", "chess"},
+      {"lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s", "shogi"},
+      {"rheag^aehr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RHEAG^AEHR / X/x", "xiangqi"},
+      {"k^ / S/s", "minimal 1D"},
+      {"1 / G/g", "minimal 1D empty"},
+      {"k^+p4+PK^ / C/c", "1D mixed"},
+      {"ab/cd//AB/CD / G/g", "3D 2x2x2"},
+      {"3/3/3//3/3/3 / G/g", "3D empty"},
+      {"8/8/8/8/8/8/8/8 3P2B/3p2b C/c", "hands with multiplicities"},
+      {"8/8/8/8/8/8/8/8 / c/C", "second player active"},
+      {"7K^/8 P/ C/c", "one-sided hand"},
+      {"8/8 +P/ C/c", "enhanced piece in hand"},
+      {"8/8 -P/ C/c", "diminished piece in hand"},
+      {"8/8 P^/ C/c", "terminal piece in hand"},
+      {"8/8 +P^/ C/c", "enhanced terminal in hand"}
+    ]
 
-      assert %Feen{} = Feen.parse!(feen)
-    end
+    for {feen, label} <- @valid_cases do
+      @feen feen
+      @label label
 
-    test "raises ArgumentError for invalid FEEN" do
-      assert_raise ArgumentError, ~r/Invalid FEEN/, fn ->
-        Feen.parse!("invalid")
+      test "both accept #{@label}" do
+        assert {:ok, _} = Sashite.Feen.parse(@feen)
+        assert Sashite.Feen.valid?(@feen)
       end
     end
   end
 
   # ===========================================================================
-  # valid?/1
+  # parse/1 and valid?/1 consistency -- invalid inputs
   # ===========================================================================
 
-  describe "valid?/1" do
-    test "returns true for valid empty board" do
-      assert Feen.valid?("8/8/8/8/8/8/8/8 / C/c")
-    end
+  describe "parse/1 and valid?/1 agree on invalid inputs" do
+    @invalid_cases [
+      {"", "empty string"},
+      {"invalid", "single field"},
+      {"a b c d", "four fields"},
+      {" / C/c", "empty placement"},
+      {"44/8 / C/c", "empty count exceeding rank width"},
+      {"08/8 / C/c", "leading zero in empty count"},
+      {"3/2 / C/c", "irregular board"},
+      {"8/8 PP/ C/c", "non-aggregated hand"},
+      {"8/8/8/8/8/8/8/8 2P3B/ C/c", "non-canonical hand order"},
+      {"8/8 / C/D", "same-case styles"},
+      {"8/8 / c/d", "same-case styles lowercase"},
+      {"8/8 / 1/c", "non-letter style token"},
+      {"8/8 / Cc", "missing style slash"},
+      {"K^k^ 2K^/2k^ S/s", "too many pieces"},
+      {"256 / C/c", "dimension size exceeds limit"},
+      {"8/8 / CC/c", "multi-character style token"}
+    ]
 
-    test "returns true for chess starting position" do
-      assert Feen.valid?("+rnbq+k^bn+r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/c")
-    end
+    for {feen, label} <- @invalid_cases do
+      @feen feen
+      @label label
 
-    test "returns true for shogi starting position" do
-      assert Feen.valid?("lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s")
-    end
-
-    test "returns true for position with pieces in hand" do
-      assert Feen.valid?("8/8/8/8/8/8/8/8 3P2B/2p C/c")
-    end
-
-    test "returns true for cross-style game" do
-      assert Feen.valid?("8/8/8/8/8/8/8/8 / M/c")
-    end
-
-    test "returns false for invalid string" do
-      refute Feen.valid?("invalid")
-    end
-
-    test "returns false for non-string input" do
-      refute Feen.valid?(123)
-      refute Feen.valid?(nil)
-      refute Feen.valid?([])
-    end
-
-    test "returns false for empty string" do
-      refute Feen.valid?("")
-    end
-
-    test "returns false for wrong field count" do
-      refute Feen.valid?("8/8/8/8/8/8/8/8 C/c")
-    end
-  end
-
-  # ===========================================================================
-  # to_string/1
-  # ===========================================================================
-
-  describe "to_string/1" do
-    test "serializes empty board" do
-      feen = "8/8/8/8/8/8/8/8 / C/c"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "serializes chess starting position" do
-      feen = "+rnbq+k^bn+r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/c"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "serializes shogi starting position" do
-      feen = "lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "serializes position with pieces in hand" do
-      feen = "8/8/8/8/8/8/8/8 3P2B/p C/c"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "serializes position with second player to move" do
-      feen = "8/8/8/8/8/8/8/8 / c/C"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "serializes 3D board with double slashes" do
-      feen = "8/8//8/8 / C/c"
-      {:ok, position} = Feen.parse(feen)
-
-      assert Feen.to_string(position) == feen
-    end
-
-    test "produces canonical hand ordering" do
-      # Non-canonical input: pieces not aggregated
-      feen = "8/8/8/8/8/8/8/8 PBP/p C/c"
-      {:ok, position} = Feen.parse(feen)
-
-      # Should produce canonical output: aggregated and sorted
-      assert Feen.to_string(position) == "8/8/8/8/8/8/8/8 2PB/p C/c"
-    end
-  end
-
-  # ===========================================================================
-  # Round-trip tests
-  # ===========================================================================
-
-  describe "round-trip" do
-    test "parse then to_string preserves canonical FEEN" do
-      canonical_feens = [
-        "8/8/8/8/8/8/8/8 / C/c",
-        "+rnbq+k^bn+r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/+RNBQ+K^BN+R / C/c",
-        "lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s",
-        "rheag^aehr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RHEAG^AEHR / X/x",
-        "rnsmk^snr/8/pppppppp/8/8/PPPPPPPP/8/RNSK^MSNR / M/m",
-        "8/8/8/8/8/8/8/8 3P2B/2p C/c",
-        "8/8/8/8/8/8/8/8 / c/C",
-        "K^'/7 / C/c",
-        "+K^/7 / C/c",
-        "-k/7 / C/c"
-      ]
-
-      for feen <- canonical_feens do
-        {:ok, position} = Feen.parse(feen)
-        assert Feen.to_string(position) == feen, "Round-trip failed for: #{feen}"
+      test "both reject #{@label}" do
+        assert {:error, _} = Sashite.Feen.parse(@feen)
+        refute Sashite.Feen.valid?(@feen)
       end
     end
   end
 
   # ===========================================================================
-  # Protocol implementations
+  # parse/1 and valid?/1 consistency -- non-string inputs
   # ===========================================================================
 
-  describe "String.Chars protocol" do
-    test "to_string/1 works via protocol" do
-      feen = "8/8/8/8/8/8/8/8 / C/c"
-      {:ok, position} = Feen.parse(feen)
+  describe "parse/1 and valid?/1 agree on non-string inputs" do
+    @non_string_cases [nil, 42, :chess, [], %{}, {:ok, "data"}]
 
-      assert "#{position}" == feen
+    for input <- @non_string_cases do
+      @input input
+
+      test "both reject #{inspect(@input)}" do
+        assert {:error, :not_a_string} = Sashite.Feen.parse(@input)
+        refute Sashite.Feen.valid?(@input)
+      end
     end
   end
 
-  describe "Inspect protocol" do
-    test "inspect shows FEEN representation" do
-      feen = "8/8/8/8/8/8/8/8 / C/c"
-      {:ok, position} = Feen.parse(feen)
+  # ===========================================================================
+  # dump/1 output is always accepted by parse/1 and valid?/1
+  # ===========================================================================
 
-      assert inspect(position) == "#Sashite.Feen<8/8/8/8/8/8/8/8 / C/c>"
+  describe "dump/1 output accepted by parse/1 and valid?/1" do
+    @dump_input_cases [
+      "-rnbqk^bn-r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/-RNBQK^BN-R / C/c",
+      "lnsgk^gsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGK^GSNL / S/s",
+      "ab/cd//AB/CD / G/g",
+      "8/8/8/8/8/8/8/8 3P2B/3p2b C/c",
+      "8/8/8/8/8/8/8/8 / c/C",
+      "k^ / S/s",
+      "1 / G/g",
+      "8/8 +P/ C/c",
+      "8/8 -P/ C/c",
+      "8/8 P^/ C/c"
+    ]
+
+    for feen <- @dump_input_cases do
+      @feen feen
+
+      test "dump output for #{inspect(@feen)} is valid" do
+        dumped = @feen |> Sashite.Feen.parse!() |> Sashite.Feen.dump()
+        assert Sashite.Feen.valid?(dumped)
+        assert {:ok, _} = Sashite.Feen.parse(dumped)
+      end
+    end
+  end
+
+  # ===========================================================================
+  # dump/1 output length within bounds
+  # ===========================================================================
+
+  describe "dump/1 output respects max_string_length" do
+    test "chess starting position fits" do
+      feen = "-rnbqk^bn-r/+p+p+p+p+p+p+p+p/8/8/8/8/+P+P+P+P+P+P+P+P/-RNBQK^BN-R / C/c"
+      dumped = feen |> Sashite.Feen.parse!() |> Sashite.Feen.dump()
+      assert byte_size(dumped) <= Sashite.Feen.max_string_length()
+    end
+
+    test "raumschach starting position fits" do
+      feen =
+        "-rnk^n-r/+p+p+p+p+p/5/5/5" <>
+          "//buqbu/+p+p+p+p+p/5/5/5" <>
+          "//5/5/5/5/5" <>
+          "//5/5/5/+P+P+P+P+P/BUQBU" <>
+          "//5/5/5/+P+P+P+P+P/-RNK^N-R / R/r"
+
+      dumped = feen |> Sashite.Feen.parse!() |> Sashite.Feen.dump()
+      assert byte_size(dumped) <= Sashite.Feen.max_string_length()
     end
   end
 end

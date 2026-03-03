@@ -1,49 +1,24 @@
 defmodule Sashite.Feen.Dumper do
-  @moduledoc """
-  Dumper (serializer) for FEEN positions.
+  @moduledoc false
 
-  This module coordinates serialization of the three FEEN fields:
-  1. Piece Placement (board occupancy)
-  2. Hands (pieces in hand)
-  3. Style-Turn (active player and styles)
+  # Orchestrator for FEEN string serialization.
+  #
+  # Extracts the relevant fields from a Qi struct and delegates to
+  # the three sub-dumpers, one per FEEN field. Concatenates the
+  # results with single ASCII spaces.
+  #
+  # The output is always canonical: each sub-dumper guarantees
+  # canonical form for its field independently.
 
-  The output is always **canonical** as specified by FEEN v1.0.0.
+  alias Sashite.Feen.Dumper.{Hands, PiecePlacement, StyleTurn}
 
-  ## Internal Use
+  @doc false
+  @spec dump(Qi.t()) :: String.t()
+  def dump(position) do
+    f1 = PiecePlacement.dump(position.board, position.shape)
+    f2 = Hands.dump(position.first_player_hand, position.second_player_hand)
+    f3 = StyleTurn.dump(position.turn, position.first_player_style, position.second_player_style)
 
-  This module is used internally by `Sashite.Feen.to_string/1`.
-  Users should use the main `Sashite.Feen` module for serialization.
-  """
-
-  alias Sashite.Feen
-  alias Sashite.Feen.Dumper.PiecePlacement
-  alias Sashite.Feen.Dumper.PiecesInHand
-  alias Sashite.Feen.Dumper.StyleTurn
-
-  @doc """
-  Dumps a position struct to its canonical FEEN string representation.
-
-  ## Parameters
-
-  - `position` - A `%Sashite.Feen{}` struct
-
-  ## Returns
-
-  A canonical FEEN string.
-
-  ## Examples
-
-      iex> position = %Sashite.Feen{...}
-      iex> Sashite.Feen.Dumper.dump(position)
-      "8/8/8/8/8/8/8/8 / C/c"
-
-  """
-  @spec dump(Feen.t()) :: String.t()
-  def dump(%Feen{} = position) do
-    piece_placement_str = PiecePlacement.dump(position.piece_placement)
-    hands_str = PiecesInHand.dump(position.hands)
-    style_turn_str = StyleTurn.dump(position.style_turn)
-
-    "#{piece_placement_str} #{hands_str} #{style_turn_str}"
+    <<f1::binary, " ", f2::binary, " ", f3::binary>>
   end
 end

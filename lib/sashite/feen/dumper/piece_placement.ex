@@ -1,107 +1,98 @@
 defmodule Sashite.Feen.Dumper.PiecePlacement do
-  @moduledoc """
-  Dumper (serializer) for the Piece Placement field of FEEN notation.
+  @moduledoc false
 
-  Canonical rules:
-  - Empty squares are run-length encoded as minimal base-10 integers (no leading zeros)
-  - Consecutive empty squares are merged
-  - Piece tokens are serialized using canonical EPIN strings
-  - Separator multiplicity is preserved exactly
+  # Serializer for the FEEN Piece Placement field (Field 1).
+  #
+  # Converts a Qi board (flat tuple) and shape into a canonical FEEN
+  # piece placement string.
+  #
+  # Responsibilities:
+  # - Run-length encoding of empty squares (consecutive nils -> count)
+  # - Separator insertion based on shape dimensionality:
+  #   * 1D [w]       — no separators
+  #   * 2D [r, f]    — "/" between ranks
+  #   * 3D [l, r, f] — "/" between ranks, "//" between layers
+  #
+  # Output is always canonical: consecutive empties merged, no leading
+  # zeros (guaranteed by Integer.to_string/1).
 
-  This dumper expects a structurally valid representation:
-  - `squares` must contain at least one segment
-  - each segment must contain at least one square
-  - `separators` length must be `length(squares) - 1`
-  - each separator count must be a positive integer (>= 1)
-  """
+  @doc false
+  @spec dump(tuple(), [pos_integer()]) :: binary()
+  def dump(board, shape) do
+    squares = Tuple.to_list(board)
 
-  alias Sashite.Epin
+    case shape do
+      [_width] ->
+        encode_segment(squares)
 
-  @spec dump(%{squares: list(), separators: list()}) :: String.t()
-  def dump(%{squares: segments, separators: separators})
-      when is_list(segments) and is_list(separators) do
-    validate_structure!(segments, separators)
+      [_rank_count, file_count] ->
+        squares
+        |> chunk_every(file_count)
+        |> Enum.map(&encode_segment/1)
+        |> Enum.intersperse("/")
+        |> IO.iodata_to_binary()
 
-    segments
-    |> Enum.map(&dump_segment!/1)
-    |> join_with_separators!(separators)
+      [_layer_count, rank_count, file_count] ->
+        rank_size = file_count
+        layer_size = rank_count * file_count
+
+        squares
+        |> chunk_every(layer_size)
+        |> Enum.map(fn layer_squares ->
+          layer_squares
+          |> chunk_every(rank_size)
+          |> Enum.map(&encode_segment/1)
+          |> Enum.intersperse("/")
+        end)
+        |> Enum.intersperse("//")
+        |> IO.iodata_to_binary()
+    end
   end
 
-  def dump(other) do
-    raise ArgumentError,
-          "Invalid piece placement: expected %{squares: list, separators: list}, got: #{inspect(other)}"
-  end
+  # -- Segment encoding (run-length) ------------------------------------
+  #
+  # Encodes a single rank (list of nil | String.t()) into a binary.
+  # Consecutive nils are merged into a single integer token.
 
-  # ===========================================================================
-  # Validation
-  # ===========================================================================
-
-  defp validate_structure!(segments, separators) do
-    if segments == [] do
-      raise ArgumentError, "Invalid piece placement: squares must contain at least one segment"
-    end
-
-    expected_seps = length(segments) - 1
-
-    if length(separators) != expected_seps do
-      raise ArgumentError,
-            "Invalid piece placement: expected #{expected_seps} separators, got #{length(separators)}"
-    end
-
-    unless Enum.all?(separators, &(is_integer(&1) and &1 >= 1)) do
-      raise ArgumentError, "Invalid piece placement: separators must be positive integers (>= 1)"
-    end
-
-    Enum.each(segments, fn segment ->
-      if segment == [] do
-        raise ArgumentError, "Invalid piece placement: segments must not be empty"
-      end
-
-      Enum.each(segment, fn
-        nil -> :ok
-        %Epin{} -> :ok
-        other ->
-          raise ArgumentError,
-                "Invalid piece placement: segment contains invalid square value: #{inspect(other)}"
-      end)
-    end)
-  end
-
-  # ===========================================================================
-  # Segment dumping
-  # ===========================================================================
-
-  defp dump_segment!(squares) do
+  defp encode_segment(squares) do
     squares
-    |> Enum.chunk_by(&is_nil/1)
-    |> Enum.map(&chunk_to_token/1)
-    |> Enum.join()
+    |> encode_tokens(0, [])
+    |> IO.iodata_to_binary()
   end
 
-  defp chunk_to_token([nil | _] = chunk), do: Integer.to_string(length(chunk))
+  # End of rank: flush any pending empties.
+  defp encode_tokens([], 0, acc), do: :lists.reverse(acc)
 
-  defp chunk_to_token(pieces) do
-    pieces
-    |> Enum.map(&Epin.to_string/1)
-    |> Enum.join()
+  defp encode_tokens([], empty_run, acc) do
+    :lists.reverse([Integer.to_string(empty_run) | acc])
   end
 
-  # ===========================================================================
-  # Joining with separators (strict)
-  # ===========================================================================
-
-  defp join_with_separators!([first | rest], separators) do
-    do_join(first, rest, separators)
+  # Empty square: increment run counter.
+  defp encode_tokens([nil | rest], empty_run, acc) do
+    encode_tokens(rest, empty_run + 1, acc)
   end
 
-  defp do_join(acc, [], []), do: acc
-
-  defp do_join(acc, [segment | segments], [sep | seps]) do
-    do_join(acc <> String.duplicate("/", sep) <> segment, segments, seps)
+  # Piece square: flush any pending empties, then emit piece.
+  defp encode_tokens([piece | rest], 0, acc) do
+    encode_tokens(rest, 0, [piece | acc])
   end
 
-  defp do_join(_acc, _segments, _seps) do
-    # Should be unreachable thanks to validate_structure!/2, but kept as a guardrail.
-    raise ArgumentError, "Invalid piece placement: separators/segments mismatch"
+  defp encode_tokens([piece | rest], empty_run, acc) do
+    encode_tokens(rest, 0, [piece, Integer.to_string(empty_run) | acc])
   end
+
+  # -- List chunking ----------------------------------------------------
+  #
+  # Splits a flat list into sublists of exactly `size` elements.
+  # Direct recursion avoids Enum protocol dispatch.
+
+  defp chunk_every([], _size), do: []
+
+  defp chunk_every(list, size) do
+    {chunk, rest} = take_chunk(list, size, [])
+    [chunk | chunk_every(rest, size)]
+  end
+
+  defp take_chunk(rest, 0, acc), do: {:lists.reverse(acc), rest}
+  defp take_chunk([head | tail], n, acc), do: take_chunk(tail, n - 1, [head | acc])
 end

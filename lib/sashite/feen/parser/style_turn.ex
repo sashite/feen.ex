@@ -1,104 +1,59 @@
-# lib/sashite/feen/parser/style_turn.ex
-
 defmodule Sashite.Feen.Parser.StyleTurn do
-  @moduledoc """
-  Parser for the Style-Turn field of FEEN notation.
+  @moduledoc false
 
-  The Style-Turn field encodes:
-  1. The native Piece Style associated with each Player Side
-  2. The identity of the Active Player
+  # Parser for the FEEN Style-Turn field (Field 3).
+  #
+  # Format: <ACTIVE-STYLE>/<INACTIVE-STYLE>
+  # Each style is a valid SIN token (exactly one ASCII letter).
+  # The two tokens must be of opposite case.
+  #
+  # Returns a map with :first_player_style, :second_player_style, and :turn.
+  # The styles are normalized so that the uppercase letter maps to
+  # :first_player_style and the lowercase letter to :second_player_style,
+  # regardless of which is active.
+  #
+  # Happy path: two pattern-match clauses, zero branching.
+  # Error path: specific atom for each failure mode.
 
-  ## Format
+  @doc false
+  @spec parse(binary()) :: {:ok, map()} | {:error, atom()}
 
-      <ACTIVE-STYLE>/<INACTIVE-STYLE>
+  # Happy path — first player (uppercase) is active.
+  def parse(<<active, ?/, inactive>>)
+      when active in ?A..?Z and inactive in ?a..?z do
+    {:ok, %{first_player_style: <<active>>, second_player_style: <<inactive>>, turn: :first}}
+  end
 
-  - Each style is a valid SIN token (exactly one ASCII letter)
-  - Uppercase = Side `first`, lowercase = Side `second`
-  - The two tokens must be of opposite case
-  - Position determines who is active (first position = active player)
+  # Happy path — second player (lowercase) is active.
+  def parse(<<active, ?/, inactive>>)
+      when active in ?a..?z and inactive in ?A..?Z do
+    {:ok, %{first_player_style: <<inactive>>, second_player_style: <<active>>, turn: :second}}
+  end
 
-  ## Examples
+  # --- Error paths (cold) ---
 
-      iex> Sashite.Feen.Parser.StyleTurn.parse("C/c")
-      {:ok, %{active: %Sashite.Sin{style: :C, side: :first}, inactive: %Sashite.Sin{style: :C, side: :second}}}
+  # Both tokens are valid letters but same case.
+  def parse(<<a, ?/, b>>)
+      when (a in ?A..?Z and b in ?A..?Z) or (a in ?a..?z and b in ?a..?z) do
+    {:error, :style_tokens_same_case}
+  end
 
-      iex> Sashite.Feen.Parser.StyleTurn.parse("c/C")
-      {:ok, %{active: %Sashite.Sin{style: :C, side: :second}, inactive: %Sashite.Sin{style: :C, side: :first}}}
+  # Exactly 3 bytes with slash at position 1, but at least one byte is not a letter.
+  def parse(<<_, ?/, _>>) do
+    {:error, :invalid_style_token}
+  end
 
-      iex> Sashite.Feen.Parser.StyleTurn.parse("C/C")
-      {:error, "Invalid style-turn: tokens must be of opposite case"}
-
-  """
-
-  alias Sashite.Sin
-
-  @type t :: %{
-          active: Sin.t(),
-          inactive: Sin.t()
-        }
-
-  @doc """
-  Parses a style-turn string into a structured representation.
-
-  ## Parameters
-
-  - `string` - The style-turn field from a FEEN string
-
-  ## Returns
-
-  - `{:ok, %{active: %Sin{}, inactive: %Sin{}}}` on success
-  - `{:error, reason}` on failure
-  """
-  @spec parse(String.t()) :: {:ok, t()} | {:error, String.t()}
-  def parse(string) when is_binary(string) do
-    with {:ok, {active_str, inactive_str}} <- split_style_turn(string),
-         {:ok, active} <- parse_sin_token(active_str, :active),
-         {:ok, inactive} <- parse_sin_token(inactive_str, :inactive),
-         :ok <- validate_opposite_case(active, inactive) do
-      {:ok, %{active: active, inactive: inactive}}
+  # Everything else: wrong length, slash not at position 1, or no slash at all.
+  def parse(input) when is_binary(input) do
+    case count_slashes(input, 0) do
+      1 -> {:error, :invalid_style_token}
+      _ -> {:error, :invalid_style_turn_delimiter}
     end
   end
 
-  # ===========================================================================
-  # Private - Field Splitting
-  # ===========================================================================
+  # -- Private helpers --
 
-  defp split_style_turn(string) do
-    case String.split(string, "/") do
-      [active, inactive] ->
-        {:ok, {active, inactive}}
-
-      parts ->
-        {:error, "Invalid style-turn: expected exactly one '/' delimiter, got #{length(parts) - 1}"}
-    end
-  end
-
-  # ===========================================================================
-  # Private - Token Parsing
-  # ===========================================================================
-
-  defp parse_sin_token(token, position) do
-    case Sin.parse(token) do
-      {:ok, sin} ->
-        {:ok, sin}
-
-      {:error, _} ->
-        {:error, "Invalid style-turn: invalid #{position} style token '#{token}'"}
-    end
-  end
-
-  # ===========================================================================
-  # Private - Validation
-  # ===========================================================================
-
-  defp validate_opposite_case(active, inactive) do
-    active_is_first = active.side == :first
-    inactive_is_first = inactive.side == :first
-
-    if active_is_first != inactive_is_first do
-      :ok
-    else
-      {:error, "Invalid style-turn: tokens must be of opposite case (one uppercase, one lowercase)"}
-    end
-  end
+  defp count_slashes(<<>>, count), do: count
+  defp count_slashes(<<?/, rest::binary>>, count), do: count_slashes(rest, count + 1)
+  defp count_slashes(<<_, rest::binary>>, count), do: count_slashes(rest, count)
 end
